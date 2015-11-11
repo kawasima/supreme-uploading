@@ -17,7 +17,8 @@
                       [wrap-not-found :not-found]
                       [wrap-defaults :defaults]]
          :not-found  "Resource Not Found"
-         :defaults   (meta-merge api-defaults {})}})
+         :defaults   (meta-merge api-defaults {})}
+   :http {:port 3000}})
 
 (defn new-system [config]
   (let [config (meta-merge base-config config)]

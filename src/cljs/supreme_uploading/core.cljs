@@ -20,21 +20,24 @@
 (def app-state
   (atom {:entity "Postal"
          :conditions [{:name "postal-cd" :label "郵便番号" :type "sting"}
-                      {:name "city-name" :label "市区町村名" :type "text"}
                       {:name "prefecture-name" :label "都道府県", :type "ref"
-                       :ref [{:value "01" :label "北海道"}
-                             {:value "02" :label "青森"}
-                             {:value "03" :label "岩手"}
-                             {:value "04" :label "秋田"}
-                             {:value "05" :label "宮城"}
-                             {:value "06" :label "山形"}
-                             {:value "07" :label "福島"}]}]
+                       :ref [{:value "北海道" :label "北海道"}
+                             {:value "青森県" :label "青森"}
+                             {:value "岩手県" :label "岩手"}
+                             {:value "秋田県" :label "秋田"}
+                             {:value "宮城県" :label "宮城"}
+                             {:value "山形県" :label "山形"}
+                             {:value "福島県" :label "福島"}]}
+                      {:name "city-name" :label "市区町村名" :type "text"}
+                      {:name "city-kana-name" :label "市区町村カナ名" :type "text"}
+                      {:name "town-name" :label "町域名" :type "text"}
+                      {:name "town-kana-name" :label "町域カナ名" :type "text"}]
          :columns [{:title "全国地方公共団体コード" :data "code", :validator #"\d+"}
                    {:title "旧郵便番号" :data "old-postal-cd", :validator #"^[\d ]{3,5}$"}
                    {:title "郵便番号" :data "postal-cd", :validator #"^\d{7}$"}
-                   {:title "都道府県カナ名" :data "prefecture-kana-name", :validator #"^[ｦ-ﾟ0-9]+$"}
-                   {:title "市区町村カナ名" :data "city-kana-name", :validator #"^[ｦ-ﾟ0-9]+$"}
-                   {:title "町域カナ名" :data "town-kana-name", :validator #"^[ｦ-ﾟ0-9]+$"}
+                   {:title "都道府県カナ名" :data "prefecture-kana-name", :validator #"^[ｦ-ﾟ0-9\(\)\-]+$"}
+                   {:title "市区町村カナ名" :data "city-kana-name", :validator #"^[ｦ-ﾟ0-9\(\)\-]+$"}
+                   {:title "町域カナ名" :data "town-kana-name", :validator #"^[ｦ-ﾟ0-9\(\)\-]+$"}
                    {:title "都道府県名" :data "prefecture-name"}
                    {:title "市区町村名" :data "city-name"}
                    {:title "町域名" :data "town-name"}

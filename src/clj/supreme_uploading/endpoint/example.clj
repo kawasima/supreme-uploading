@@ -8,7 +8,8 @@
             [hiccup.page :refer [html5 include-css include-js]]
             [clojure.java.io :as io]))
 (def styles
-  [[:.main.content {:min-height "100%"
+  [[:.ui.fixed.menu {:z-index 1000}]
+   [:.main.content {:min-height "100%"
                     :max-width (px 960)
                     :margin {:left "auto" :right "auto"}
                     :padding {:top (px 80)
@@ -19,7 +20,10 @@
                              :right "1px solid #ddd"}}]
    [:.handson-container {:width (px 850)
                          :height (px 400)
-                         :overflow "auto"}]])
+                         :overflow "auto"}]
+   [:i.arrow.icon {:user-select "none"
+                   :cursor "pointer"}]
+   [:select {:width "100%"}]])
 
 (defn index [req]
   (html5
@@ -28,7 +32,7 @@
     [:meta {:http-equiv "X-UA-Compatible" :content "IE=edge,chrome=1"}]
     [:meta {:name "viewport" :content "width=device-width, initial-scale=1, maximum-scale=1"}]
     (include-css "https://cdn.jsdelivr.net/semantic-ui/2.1.4/semantic.min.css"
-                 "https://cdn.jsdelivr.net/handsontable/0.18.0/handsontable.full.min.css"
+                 "https://cdn.jsdelivr.net/handsontable/0.20.0/handsontable.full.min.css"
                  "/css/main.css")
     (include-js  "https://cdn.jsdelivr.net/handsontable/0.18.0/handsontable.full.min.js"
                  "https://cdn.jsdelivr.net/jszip/2.5.0/jszip.min.js"

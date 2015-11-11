@@ -4,68 +4,91 @@
             [om-tools.core :refer-macros [defcomponent]]
             [sablono.core :as html :refer-macros [html]]
             [cljs.core.async :refer [>! <! chan timeout]]
-            [clojure.browser.net :as net]
+            [clojure.walk]
             [bouncer.core :as b]
             [bouncer.validators :as v]
             [goog.events :as events]
+            [goog.string :as gstring]
             [goog.ui.Component]
+            [goog.fs]
             [supreme-uploading.api :as api]
-            [cljs.reader :refer [read-string]])
-  (:import [goog.net EventType]
-           [goog.events KeyCodes]))
+            [cljs.reader :refer [read-string]]))
 
-(defn search-by-conditions [entity-name conditions callback]
+(defn search-by-conditions [entity-name headers conditions callback]
   (let [query (->> conditions
                    (map (fn [[k v]]
-                        (if (= "equal" (:operator v))
-                          (str "f." k "=" (:value v)))) conditions)
+                          (let [base-query (str "f." k "=" (js/encodeURIComponent (:value v)))]
+                            (if (not= "equal" (:operator v))
+                              (str base-query "&fo." k "=" (:operator v))
+                              base-query)))
+                        conditions)
                    (clojure.string/join "&"))]
     (api/request (str "/api/" entity-name
-                      (when query (str "?" query)))
+                      "?cols=" (clojure.string/join "," headers)
+                      (when query (str "&" query)))
                      :GET (pr-str conditions)
                      :handler (fn [res]
-                                (let [data (->> res
-                                                (map clojure.walk/stringify-keys)
-                                                 vec
-                                                 clj->js)]
-                                  (callback data))))))
+                                (callback res))
+                     :accept "text/tab-separated-values")))
+
+(defn search-for-download [entity-name headers conditions callback]
+  (let [query (->> conditions
+                   (map (fn [[k v]]
+                          (let [base-query (str "f." k "=" (js/encodeURIComponent (:value v)))]
+                            (if (not= "equal" (:operator v))
+                              (str base-query "&fo." k "=" (:operator v))
+                              base-query)))
+                        conditions)
+                   (clojure.string/join "&"))]
+    (api/request (str "/api/" entity-name
+                      "?cols=" (clojure.string/join "," headers)
+                      (when query (str "&" query)))
+                     :GET (pr-str conditions)
+                     :handler (fn [res]
+                                (callback res))
+                     :accept "text/csv")))
 
 (defcomponent action-menu [entity-name owner {:keys [request-handler]}]
   (init-state [_]
     {:save-status nil})
-  (render-state [_ {:keys [save-status]}]
+  (render-state [_ {:keys [save-status errors-count]}]
     (html
      [:div.ui.menu
       [:div.item
        [:button.ui.primary.button
-        {:type "button"
-         :on-click (fn [e]
-                     (api/request (str "/api/" entity-name)
-                                  :POST
-                                  (request-handler)
-                                  
-                                  :handler (fn [res]
-                                             (om/set-state! owner :save-status :saved)
-                                             (go
-                                               (<! (timeout 3000))
-                                               (om/set-state! owner :save-status nil))))
-                     (om/set-state! owner :save-status :saving))}
+        (merge
+         {:type "button"
+          :on-click (fn [e]
+                      (api/request (str "/api/" entity-name)
+                                   :POST
+                                   (request-handler)
+                                   
+                                   :handler (fn [res]
+                                              (om/set-state! owner :save-status :saved)
+                                              (go
+                                                (<! (timeout 3000))
+                                                (om/set-state! owner :save-status nil))))
+                      (om/set-state! owner :save-status :saving))}
+         (when (> errors-count 0) {:class "disabled"}))
         "保存"]
        (case save-status
          :saving "保存中です…"
          :saved  "保存しました"
-         "")]])))
+         (if (> errors-count 0)
+           (str "エラーが" errors-count "件あります。")
+           ""))]])))
 
 (defcomponent grid-new [app owner]
   (init-state [_]
-    {})
+    {:errors {}})
 
-  (render-state [_ _]
+  (render-state [_ {:keys [errors]}]
     (html
      [:div
       [:div.handson-container]
       (om/build action-menu (:entity app)
-                {:opts
+                {:state {:errors-count (count errors)}
+                 :opts
                  {:request-handler (fn []
                                      (let [handsontable (om/get-state owner :handsontable)]
                                        (pr-str {:headers (map :data (:columns app)) 
@@ -87,7 +110,18 @@
                                                       (if-let [col (first (filter #(= (aget change 1) (:data %)) (:columns app)))]
                                                         (when (= (:type col) "checkbox")
                                                           (let [v (aget change 3)]
-                                                            (aset change 3 (or (= v 1) (= v "1") (= v "yes") (= v "on"))))))))}))]
+                                                            (aset change 3 (or (= v 1) (= v "1") (= v "yes") (= v "on"))))))))
+                                    :afterValidate (fn [valid? value row prop source]
+                                                     (if valid?
+                                                       (when (om/get-state owner [:errors row prop])
+                                                         (if (<= (count (om/get-state owner [:errors row]) 1))
+                                                           (om/update-state! owner [:errors]  (fn [errors] (dissoc errors row)))
+                                                           (om/update-state! owner [:errors row]
+                                                                           (fn [props]
+                                                                             (dissoc props prop)))))
+                                                       (om/update-state! owner [:errors row]
+                                                                         (fn [props] (assoc props prop true))))
+                                                     valid?)}))]
         (set! (.-grid js/window) handsontable)
         (om/set-state! owner :handsontable handsontable))
       
@@ -106,6 +140,12 @@
                         {:class "trash"}
                         {:class "filter"}))]
       label-name])))
+
+(defn selected-values [sel]
+  (some->> (array-seq (.querySelectorAll sel "option") 0)
+           (filter #(.-selected %))
+           (map #(.-value %))))
+
 
 (defcomponent grid-query [app owner]
   (init-state [_]
@@ -158,16 +198,16 @@
                 [:div.ui.equal.width.grid
                  [:div.column
                   [:input {:type "text" :name (:name condition)
-                         :value (om/get-state owner [:conditions (:name condition) :value])
-                         :on-change (fn [e]
-                                      (om/update-state! owner [:conditions (:name condition)]
-                                                        #(assoc %
-                                                                :value (.. e -target -value))))}]]
+                           :value (om/get-state owner [:conditions (:name condition) :value])
+                           :on-change (fn [e]
+                                        (om/update-state! owner [:conditions (:name condition)]
+                                                          #(assoc %
+                                                                  :value (.. e -target -value))))}]]
                  [:div.column
                   [:select {:value (om/get-state owner [:conditions (:name condition) :operator])
                             :on-change (fn [e]
                                          (om/update-state! owner [:conditions (:name condition)]
-                                                           #(assoc % :value (.. e -target -value))))}
+                                                           #(assoc % :operator (.. e -target -value))))}
                   [:option {:value "contains"} "を含む"]
                   [:option {:value "not-contains"} "を含まない"]]]                 ]
                 
@@ -199,32 +239,26 @@
         [:i.dropdown.icon] "オプション"]
        [:div.content (when (:open-options? menu-status) {:class "active"})
         [:div.ui.grid
-         [:div.three.wide.column "column"]
+         [:div.three.wide.column "表示項目"]
          [:div.four.wide.column
           [:select {:name "available_columns" :multiple "multiple"}
            (for [column (->> (:columns app)
                              (remove (fn [c] (some #(= c %) selected-columns))))]
              [:option {:value (:data column)} (:title column)])]]
          [:div.one.wide.column
-          [:button.ui.button
-           {:type "button"
-            :on-click (fn [e]
-                        (if-let [sel (some-> (.querySelector (om/get-node owner) "select[name=available_columns]")
-                                             (.-value))]
-                          (om/update-state! owner :selected-columns
-                                            (fn [cols]
-                                              (if-let [c (first (filter #(= (:data %) sel) (:columns app)))]
-                                                (conj cols c))))))}
+          [:div {:on-click (fn [e]
+                             (if-let [sel (selected-values (.querySelector (om/get-node owner) "select[name=available_columns]"))]
+                               (om/update-state! owner :selected-columns
+                                                 (fn [cols]
+                                                   (if-let [c (filter #(some #{(:data %)}  sel) (:columns app))]
+                                                     (concat cols c))))))}
            [:i.arrow.right.icon]]
-          [:button.ui.button
-           {:type "button"
-            :on-click (fn [e]
-                        (if-let [sel (some-> (.querySelector (om/get-node owner) "select[name=selected_columns]")
-                                             (.-value))]
+          [:div {:on-click (fn [e]
+                        (if-let [sel (selected-values (.querySelector (om/get-node owner) "select[name=selected_columns]"))]
                           (om/update-state! owner :selected-columns
                                             (fn [cols]
                                               (->> cols
-                                                   (remove #(= (:data %) sel))
+                                                   (remove #(some #{(:data %)} sel))
                                                    vec)))))}
            [:i.arrow.left.icon]]]
          [:div.four.wide.column
@@ -232,40 +266,69 @@
            (for [column selected-columns]
              [:option {:value (:data column)} (:title column)])]]
          [:div.one.wide.column
-          [:button.ui.button
-           {:type "button"
-            :on-click (fn [e]
-                        (if-let [sel (some-> (.querySelector (om/get-node owner) "select[name=selected_columns]")
-                                             (.-value))]
-                          (om/update-state! owner :selected-columns
-                                            (fn [cols]
-                                              (if-let [c (first (filter #(= (:data %) sel) (:columns app)))]
-                                                (conj cols c))))))}
+          [:div {:on-click (fn [e]
+                             (let [select-box (.querySelector (om/get-node owner) "select[name=selected_columns]")]
+                               (when-let [sel (selected-values select-box)]
+                                 (om/update-state! owner :selected-columns
+                                                   (fn [cols]
+                                                     (let [prependee (take-while #(not (some #{(:data %)} sel)) cols)
+                                                           selcols   (filter #(some #{(:data %)} sel) cols)
+                                                           appendee  (->> cols
+                                                                          (drop-while #(not (some #{(:data %)} sel)))
+                                                                          (remove #(some #{%} selcols)))]
+                                                       (into []
+                                                             (concat (drop-last prependee) selcols (take-last 1 prependee) appendee))))))))}
            [:i.arrow.up.icon]]
-          [:button.ui.button
-           {:type "button"
-            :on-click (fn [e]
-                        (if-let [sel (some-> (.querySelector (om/get-node owner) "select[name=selected_columns]")
-                                             (.-value))]
-                          (om/update-state! owner :selected-columns
-                                            (fn [cols]
-                                              (if-let [c (first (filter #(= (:data %) sel) (:columns app)))]
-                                                (conj cols c))))))}
+
+          [:div {:on-click (fn [e]
+                             (let [select-box (.querySelector (om/get-node owner) "select[name=selected_columns]")]
+                               (when-let [sel (selected-values select-box)]
+                                 (om/update-state! owner :selected-columns
+                                                   (fn [cols]
+                                                     (let [prependee (take-while #(not (some #{(:data %)} sel)) cols)
+                                                           selcols   (filter #(some #{(:data %)} sel) cols)
+                                                           appendee  (->> cols
+                                                                          (drop-while #(not (some #{(:data %)} sel)))
+                                                                          (remove #(some #{%} selcols)))]
+                                                       (into []
+                                                             (concat prependee (take 1 appendee) selcols (drop 1 appendee)))))))))}
            [:i.arrow.down.icon]]]]]]
 
       [:div.ui.buttons
        [:button.ui.basic.button
         {:on-click (fn [e]
-                     (search-by-conditions (:entity app)
-                                           (om/get-state owner :conditions)
-                                           (fn [data]
-                                             (if (empty? data)
+                     (let [headers (map :data (om/get-state owner :selected-columns))]
+                       (search-by-conditions (:entity app)
+                                             headers
+                                             (om/get-state owner :conditions)
+                                             (fn [data]
                                                (let [handsontable (om/get-state owner :handsontable)]
-                                                 (.loadData handsontable (clj->js [{:code "該当するデータがありません"}]))
-                                                 (.updateSettings handsontable (clj->js {:mergeCells [{:row 0 :col 0 :rowspan 1 :colspan (.countCols handsontable)}]})))
-                                               (.loadData (om/get-state owner :handsontable) data))
-                                             )))}
-        [:i.green.check.icon] "適用"]]
+                                                 (.updateSettings handsontable (js-obj "readOnly" true))
+                                                 (if (empty? data)
+                                                   (do (.loadData handsontable (clj->js [{:code "該当するデータがありません"}]))
+                                                       (.updateSettings handsontable (clj->js {:mergeCells [{:row 0 :col 0 :rowspan 1 :colspan (.countCols handsontable)}]})))
+                                                   (.loadData (om/get-state owner :handsontable)
+                                                              (clj->js (map #(apply js-obj (interleave headers %))
+                                                                            (drop 1 data)))))
+                                                 (.updateSettings handsontable (js-obj "readOnly" true)))))))}
+        [:i.green.check.icon] "適用"]
+       [:button.ui.basic.button
+        {:on-click (fn [e]
+                     (.preventDefault e)
+                     (let [headers (map :data (om/get-state owner :selected-columns))]
+                       (search-for-download (:entity app)
+                                             headers
+                                             (om/get-state owner :conditions)
+                                             (fn [csv]
+                                               (let [blob (goog.fs/getBlobWithProperties (array csv) "text/csv")
+                                                     click-event (. js/document createEvent "HTMLEvents")
+                                                     anchor (. js/document createElement "a")]
+                                                 (.initEvent click-event "click")
+                                                 (doto anchor
+                                                   (.setAttribute "href" (goog.fs/createObjectUrl blob))
+                                                   (.setAttribute "download" "postal.csv"))
+                                                 (.dispatchEvent anchor click-event))))))}
+        [:i.cloud.download.icon] "ダウンロード"]]
       [:div.handson-container]
       (when editable?
         (om/build action-menu (:entity app)
@@ -275,31 +338,38 @@
                                                                       (.getDataAtRow handsontable i)))}))}}))]))
   
   (did-mount [_]
-    (api/request (str "/api/" (:entity app))
-                     :GET nil
-                     :handler (fn [res]
-                                (let [data (->> res
-                                                (map clojure.walk/stringify-keys)
-                                                 vec
-                                                 clj->js)
-                                      container (.querySelector (om/get-node owner) ".handson-container")]
-                                  (if (empty? data)
-                                    (println "")
-                                    (let [handsontable (js/Handsontable.
-                                                        container
-                                                        (clj->js {:startCols (count (om/get-state owner :selected-columns))
-                                                                  :startRows 1
-                                                                  :columnSorting true
-                                                                  :manualColumnResize true
-                                                                  :rowHeaders true
-                                                                  :columns (om/get-state owner :selected-columns)
-                                                                  :readOnly true
-                                                                  :afterChange (fn [changes source]
-                                                                                 (doseq [change changes]))}))
-                                          headers (map :data (om/get-state owner :selected-columns))]
-                                      (set! (.-grid js/window) handsontable)
-                                      (om/set-state! owner :handsontable handsontable)
-                                      (.loadData handsontable data)))))))
+    (let [headers (->> (om/get-state owner :selected-columns)
+                       (map :data)
+                       (map name))]
+      (api/request (str "/api/" (:entity app) "?cols=" (clojure.string/join "," headers))
+                   :GET nil
+                   :accept "text/tab-separated-values"
+                   :handler (fn [res]
+                              (if (empty? res)
+                                (println "")
+                                (let [handsontable (js/Handsontable.
+                                                    (.querySelector (om/get-node owner) ".handson-container")
+                                                    (clj->js {:startCols (count headers)
+                                                              :startRows 1
+                                                              :stretchH  "all"
+                                                              :columnSorting true
+                                                              :manualColumnResize true
+                                                              :rowHeaders true
+                                                              :columns  headers
+                                                              :beforeChange (fn [changes source]
+                                                                              (doseq [change changes]
+                                                                                (if-let [col (first (filter #(= (aget change 1) (:data %)) (:columns app)))]
+                                                                                  (when (= (:type col) "checkbox")
+                                                                                    (let [v (aget change 3)]
+                                                                                      (aset change 3 (or (= v 1) (= v "1") (= v "yes") (= v "on") (= v "true"))))))))
+                                                              :afterChange (fn [changes source]
+                                                                             (doseq [change changes]))}))
+                                      headers (map :data (om/get-state owner :selected-columns))]
+                                  (set! (.-grid js/window) handsontable)
+                                  (om/set-state! owner :handsontable handsontable)
+                                  (.loadData handsontable (clj->js (map #(apply js-obj (interleave headers %))
+                                                                        (drop 1 res))) )
+                                  (.updateSettings handsontable (clj->js {:readOnly true}))))))))
   (did-update [_ _ _]
     (if-let [handsontable (om/get-state owner :handsontable)]
       (.updateSettings handsontable (clj->js {:columns (om/get-state owner :selected-columns)})))))
